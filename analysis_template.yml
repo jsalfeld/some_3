@@ -1,0 +1,9 @@
+title: "some nice title"
+label: analysis:some_nice_title
+objective: "Describe the main objective of the analysis here."
+details: |-
+  Provide a detailed description of the analysis, including methods, data sources, and any other relevant information.
+  This section can span multiple lines and include markdown formatting if needed.
+conclusions: |-
+  Summarize the key findings and conclusions drawn from the analysis.
+  Highlight any important insights or recommendations based on the results. Keep it short.
