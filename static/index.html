@@ -973,8 +973,8 @@
         // ====================================================================
 
         function checkDisclaimer() {
-            const accepted = localStorage.getItem('disclaimerAccepted');
-            console.log('Disclaimer acceptance status:', accepted);
+            // Always show disclaimer on page load
+            console.log('Showing disclaimer modal');
 
             const modal = document.getElementById('disclaimerModal');
             if (!modal) {
@@ -982,21 +982,12 @@
                 return;
             }
 
-            if (accepted === 'true') {
-                // User has already accepted, hide the modal
-                console.log('User has accepted disclaimer, hiding modal');
-                modal.classList.remove('active');
-            } else {
-                // Show modal (should already have 'active' class)
-                console.log('User has NOT accepted disclaimer, modal should be visible');
-                modal.classList.add('active'); // Ensure it's active
-            }
+            // Ensure modal is visible
+            modal.classList.add('active');
         }
 
         function acceptDisclaimer() {
-            // Save acceptance to localStorage
-            localStorage.setItem('disclaimerAccepted', 'true');
-            // Hide the modal
+            // Just hide the modal (don't persist - will show again on next page load)
             document.getElementById('disclaimerModal').classList.remove('active');
         }
 
@@ -1114,6 +1105,27 @@
 
                 // Update title
                 document.getElementById('chatTitle').textContent = `Session ${sessionId.substring(0, 8)}`;
+
+                // Load saved messages
+                if (status.messages && status.messages.length > 0) {
+                    status.messages.forEach(msg => {
+                        if (msg.type === 'user') {
+                            addUserMessage(msg.text);
+                        } else if (msg.type === 'agent') {
+                            addAgentMessage(msg.text);
+                        } else if (msg.type === 'system') {
+                            addSystemMessage(msg.text);
+                        } else if (msg.type === 'reasoning') {
+                            // Reconstruct reasoning card data
+                            addReasoningCard({
+                                node: msg.node,
+                                iteration: msg.iteration,
+                                thought: msg.text,
+                                timestamp: msg.timestamp
+                            });
+                        }
+                    });
+                }
 
                 // Load artifacts immediately
                 loadArtifacts();
@@ -1428,6 +1440,9 @@
 
             const messageTime = timestamp ? new Date(timestamp) : new Date();
 
+            // Format text based on type - agent messages get markdown formatting
+            const formattedText = type === 'agent' ? formatMarkdown(text) : escapeHtml(text);
+
             const message = document.createElement('div');
             message.className = 'message';
             message.innerHTML = `
@@ -1439,7 +1454,7 @@
                     </div>
                 </div>
                 <div class="message-content">
-                    <div class="message-text">${text}</div>
+                    <div class="message-text">${formattedText}</div>
                 </div>
             `;
 
@@ -1837,6 +1852,27 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function formatMarkdown(text) {
+            // Simple markdown formatting for agent messages
+            let formatted = escapeHtml(text);
+
+            // Bold: **text** or __text__
+            formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            formatted = formatted.replace(/__(.+?)__/g, '<strong>$1</strong>');
+
+            // Italic: *text* or _text_
+            formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            formatted = formatted.replace(/_(.+?)_/g, '<em>$1</em>');
+
+            // Code: `code`
+            formatted = formatted.replace(/`(.+?)`/g, '<code>$1</code>');
+
+            // Line breaks
+            formatted = formatted.replace(/\n/g, '<br>');
+
+            return formatted;
         }
     </script>
 </body>

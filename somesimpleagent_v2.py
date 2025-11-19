@@ -336,6 +336,16 @@ def write_analysis_code(state: StatisticalAnalysisState) -> StatisticalAnalysisS
     else:
         files_instruction = f"Data Files: {', '.join(data_filenames)}\n(These files are in the current working directory, so just use these filenames directly)"
 
+    # Get available packages (limit to key packages for prompt brevity)
+    available_packages = state.get("available_packages", [])
+    # Extract key data science packages
+    key_packages = [p for p in available_packages if any(pkg in p.lower() for pkg in
+                    ['pandas', 'numpy', 'scipy', 'matplotlib', 'seaborn', 'scikit', 'statsmodels', 'plotly'])]
+    if key_packages:
+        packages_info = f"\n\nAvailable Python packages (use ONLY these):\n{', '.join(key_packages)}"
+    else:
+        packages_info = "\n\nUse standard data science packages: pandas, numpy, scipy, matplotlib, seaborn, scikit-learn, statsmodels"
+
     if iteration == 0:
         # First iteration - write initial code
         system_prompt = """You are an expert statistical programmer. Write Python code to perform statistical analysis.
@@ -381,9 +391,12 @@ Data Summary:
 
 Full Analysis Plan:
 {analysis_plan}
+{packages_info}
 
 Write complete Python code to perform this analysis following the plan above.
-IMPORTANT: Save all plots to the current directory with descriptive names like 'var_distribution.png', 'rolling_var.png', etc.""")
+IMPORTANT:
+- Only use the packages listed above that are available
+- Save all plots to the current directory with descriptive names like 'var_distribution.png', 'rolling_var.png', etc.""")
         ]
     else:
         # Subsequent iterations - improve based on validation feedback

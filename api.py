@@ -86,6 +86,7 @@ def save_session_metadata():
             "refinement_count": session.get("refinement_count", 0),
             "artifact_version": session.get("artifact_version", 0),  # Persist version counter
             "require_code_approval": session.get("require_code_approval", False),  # Persist code approval setting
+            "messages": session.get("messages", []),  # Persist all messages (user, agent, reasoning, system)
             "feedback_link": session.get("feedback_link"),  # Persist feedback link
             "gitlab_repo": session.get("gitlab_repo"),  # Persist GitLab repo URL
             "gitlab_branch": session.get("gitlab_branch")  # Persist GitLab branch
@@ -179,6 +180,28 @@ def get_session(session_id: str) -> Dict[str, Any]:
     return sessions[session_id]
 
 
+def get_installed_packages() -> list:
+    """Get list of installed Python packages."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['pip', 'list', '--format=json'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            packages = json.loads(result.stdout)
+            # Return list of package names with versions
+            return [f"{p['name']}=={p['version']}" for p in packages]
+        else:
+            print(f"Warning: Could not get installed packages: {result.stderr}")
+            return []
+    except Exception as e:
+        print(f"Warning: Could not get installed packages: {e}")
+        return []
+
+
 async def stream_reasoning(session_id: str, state: StatisticalAnalysisState):
     """Stream reasoning events as Server-Sent Events."""
     reasoning_log = state.get("reasoning_log", [])
@@ -207,6 +230,9 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
     sessions[session_id]["artifact_version"] = version
     print(f"  Running analysis version {version} for session {session_id[:8]}...")
 
+    # Track which reasoning entries we've already added to messages
+    last_reasoning_count = 0
+
     # Stream execution and update session state in real-time
     final_state = None
     last_node_name = None
@@ -227,6 +253,19 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
                     sessions[session_id]["updated_at"] = datetime.now().isoformat()
                     final_state = node_state
                     last_node_name = node_name
+
+                    # Add new reasoning entries to messages array
+                    reasoning_log = node_state.get("reasoning_log", [])
+                    if len(reasoning_log) > last_reasoning_count:
+                        for entry in reasoning_log[last_reasoning_count:]:
+                            sessions[session_id].setdefault("messages", []).append({
+                                "type": "reasoning",
+                                "node": entry.get("node", "unknown"),
+                                "iteration": entry.get("iteration", 0),
+                                "text": entry.get("thought", ""),
+                                "timestamp": entry.get("timestamp", datetime.now().isoformat())
+                            })
+                        last_reasoning_count = len(reasoning_log)
 
                     # If code was just generated and approval is required, wait for approval
                     # Use session-level setting instead of global REQUIRE_CODE_APPROVAL
@@ -285,6 +324,14 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
         sessions[session_id]["status"] = "failed"
         sessions[session_id]["error"] = "Agent workflow did not execute. Check API key and configuration."
         sessions[session_id]["updated_at"] = datetime.now().isoformat()
+
+        # Add system message for failure
+        sessions[session_id].setdefault("messages", []).append({
+            "type": "system",
+            "text": "❌ Analysis failed - Agent workflow did not execute. Check API key and configuration.",
+            "timestamp": datetime.now().isoformat()
+        })
+
         save_session_metadata()
         return final_state
 
@@ -292,6 +339,13 @@ def run_agent_with_streaming(session_id: str, state: StatisticalAnalysisState) -
     sessions[session_id]["state"] = final_state
     sessions[session_id]["status"] = "completed"
     sessions[session_id]["updated_at"] = datetime.now().isoformat()
+
+    # Add system message for completion
+    sessions[session_id].setdefault("messages", []).append({
+        "type": "system",
+        "text": f"✅ Analysis completed successfully{' (with issues)' if not final_state.get('is_valid', False) else ''}",
+        "timestamp": datetime.now().isoformat()
+    })
 
     # NOTE: Feedback link is NOT generated here automatically
     # This allows you to generate it asynchronously after completion
@@ -392,12 +446,16 @@ async def create_analysis(
         file_paths.append(str(file_path))
         filenames.append(file.filename)
 
+    # Get available Python packages
+    available_packages = get_installed_packages()
+
     # Initialize state
     initial_state = {
         "task": task,
         "data_file_path": file_paths[0],  # First file for backward compatibility - agent can use this
         "data_file_paths": file_paths,  # All file paths - agent can use this to access all files
         "output_dir": str(session_dir),  # Full path for plots (used in generated code)
+        "available_packages": available_packages,  # List of installed packages the agent can use
         "analysis_objective": "",
         "analysis_plan": "",  # Full analysis plan with methodology
         "data_summary": "",
@@ -430,6 +488,7 @@ async def create_analysis(
         "artifact_version": 0,  # Start at 0, will increment to 1 on first save
         "refinement_count": 0,
         "require_code_approval": require_code_approval_bool,  # Store per-session code approval setting
+        "messages": [{"type": "user", "text": task, "timestamp": datetime.now().isoformat()}],  # Unified messages array
         "gitlab_repo": gitlab_repo,  # Store GitLab repo URL if provided
         "gitlab_branch": gitlab_branch if gitlab_repo else None  # Store GitLab branch if repo provided
     }
@@ -454,6 +513,14 @@ async def run_analysis_async(session_id: str, state: StatisticalAnalysisState):
         sessions[session_id]["status"] = "failed"
         sessions[session_id]["error"] = str(e)
 
+        # Add system message for error
+        sessions[session_id].setdefault("messages", []).append({
+            "type": "system",
+            "text": f"❌ Analysis failed with error: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        })
+        save_session_metadata()
+
 
 @app.get("/analysis/{session_id}/status")
 async def get_status(session_id: str):
@@ -472,6 +539,7 @@ async def get_status(session_id: str):
         "is_valid": state.get("is_valid", False),
         "has_errors": bool(state.get("execution_error", "")),
         "reasoning_entries": len(state.get("reasoning_log", [])),
+        "messages": session.get("messages", []),  # Include all messages for frontend display
         "feedback_link": session.get("feedback_link"),  # Include feedback link if available
         "gitlab_repo": session.get("gitlab_repo"),  # Include GitLab repo if linked
         "gitlab_branch": session.get("gitlab_branch")  # Include GitLab branch if set
@@ -590,7 +658,16 @@ Please refine the analysis based on the refinement request above."""
         # Keep: data_file_path, data_summary, reasoning_log (to maintain history)
     }
 
+    # Add refinement request to messages
+    session.setdefault("messages", []).append({
+        "type": "user",
+        "text": f"[Refinement] {request.refinement_prompt}",
+        "timestamp": datetime.now().isoformat()
+    })
+
     # Update session (preserve require_code_approval setting)
+    # NOTE: We do NOT update session["task"] - that stays as the original task for display
+    # Only state["task"] gets the refined task with all the context for the agent
     session["status"] = "processing"
     session["updated_at"] = datetime.now().isoformat()
     session["state"] = refinement_state
@@ -743,6 +820,13 @@ async def ask_question(session_id: str, question: str = Form(...)):
             detail="Cannot answer questions about incomplete analysis"
         )
 
+    # Add user question to messages
+    session.setdefault("messages", []).append({
+        "type": "user",
+        "text": question,
+        "timestamp": datetime.now().isoformat()
+    })
+
     # Get existing results
     session_dir = Path(session["session_dir"])
     state = session.get("state", {})
@@ -785,6 +869,15 @@ Be specific and reference the actual results. If the information isn't in the co
     response = llm.invoke(messages)
     answer = response.content.strip()
 
+    # Add agent response to messages
+    session["messages"].append({
+        "type": "agent",
+        "text": answer,
+        "timestamp": datetime.now().isoformat()
+    })
+    session["updated_at"] = datetime.now().isoformat()
+    save_session_metadata()
+
     return {
         "question": question,
         "answer": answer,
@@ -810,6 +903,13 @@ async def stop_analysis(session_id: str):
     # Mark session as cancelled
     session["status"] = "cancelled"
     session["updated_at"] = datetime.now().isoformat()
+
+    # Add system message
+    session.setdefault("messages", []).append({
+        "type": "system",
+        "text": "⏹ Analysis stopped by user",
+        "timestamp": datetime.now().isoformat()
+    })
 
     # Save metadata
     save_session_metadata()
